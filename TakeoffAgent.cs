@@ -215,7 +215,11 @@ public sealed class TakeoffAgent
         _donePages = 0; _totalPages = 0;
         int filesFinished = 0;
         int filesFailed = 0;
-        ReportPdfProgress(pdfs.Count, filesFinished, filesFailed, 0, "");
+        int completedPageCount = 0;
+        int completedFilesWithPageCount = 0;
+        double completedPageSeconds = 0;
+        double completedFilePages = 0;
+        ReportPdfProgress(pdfs.Count, filesFinished, filesFailed, 0, "", 0, 0, 0, 0);
         Logger.Info($"=== FAST RUN START: {pdfs.Count} PDF(s) | model '{model}' | mode {(useVision ? "single-pass vision + extracted text" : "single-pass text")} | ctx {_s.NumCtx} | cache {(_s.UseCache ? "on" : "off")}");
         LogMemory("fast run start");
 
@@ -247,7 +251,13 @@ public sealed class TakeoffAgent
                 var fileName = Path.GetFileName(path);
                 PdfSession? session = null;
                 bool fileFailed = false;
-                ReportPdfProgress(pdfs.Count, filesFinished, filesFailed, 1, fileName);
+                double avgPageSecondsAtStart = completedPageCount > 0
+                    ? completedPageSeconds / completedPageCount : 0;
+                double avgPagesPerFileAtStart = completedFilesWithPageCount > 0
+                    ? completedFilePages / completedFilesWithPageCount : 0;
+                ReportPdfProgress(pdfs.Count, filesFinished, filesFailed, 1, fileName,
+                    0, 0, avgPageSecondsAtStart, avgPagesPerFileAtStart,
+                    false, total.Elapsed.TotalSeconds);
                 try
                 {
                     _status.Report($"Opening {fileName}...");
@@ -255,11 +265,24 @@ public sealed class TakeoffAgent
                     session = await PdfSession.OpenAsync(path, TimeSpan.FromSeconds(_s.PdfStepTimeoutSec * 2), ct).ConfigureAwait(false);
                     Interlocked.Add(ref _totalPages, session.PageCount);
                     Logger.Info($"--- {fileName}: {session.PageCount} page(s), opened in {openWatch.Elapsed.TotalSeconds:0.0}s");
+                    double avgPagesPerFileAfterOpen = completedFilesWithPageCount > 0
+                        ? completedFilePages / completedFilesWithPageCount : session.PageCount;
+                    ReportPdfProgress(pdfs.Count, filesFinished, filesFailed, 1, fileName,
+                        session.PageCount, 0,
+                        completedPageCount > 0 ? completedPageSeconds / completedPageCount : 0,
+                        avgPagesPerFileAfterOpen, false, total.Elapsed.TotalSeconds);
 
                     for (int page = 1; page <= session.PageCount; page++)
                     {
                         ct.ThrowIfCancellationRequested();
                         var pageWatch = Stopwatch.StartNew();
+                        ReportPdfProgress(pdfs.Count, filesFinished, filesFailed, 1, fileName,
+                            session.PageCount, page - 1,
+                            completedPageCount > 0 ? completedPageSeconds / completedPageCount : 0,
+                            completedFilesWithPageCount > 0
+                                ? completedFilePages / completedFilesWithPageCount
+                                : session.PageCount,
+                            true, total.Elapsed.TotalSeconds);
                         var tag = $"[{fileName} p{page}/{session.PageCount}]";
                         try
                         {
@@ -375,7 +398,17 @@ public sealed class TakeoffAgent
                         }
                         finally
                         {
+                            pageWatch.Stop();
+                            completedPageSeconds += pageWatch.Elapsed.TotalSeconds;
+                            completedPageCount++;
                             MarkFastDone(fileIndex, page, session.PageCount, pdfs.Count);
+                            double avgPageSeconds = completedPageSeconds / Math.Max(1, completedPageCount);
+                            double avgPagesPerFile = completedFilesWithPageCount > 0
+                                ? completedFilePages / completedFilesWithPageCount
+                                : session.PageCount;
+                            ReportPdfProgress(pdfs.Count, filesFinished, filesFailed, 1, fileName,
+                                session.PageCount, page, avgPageSeconds, avgPagesPerFile,
+                                false, total.Elapsed.TotalSeconds);
                             LogMemory($"page complete: {fileName} p{page}");
                         }
                     }
@@ -392,11 +425,23 @@ public sealed class TakeoffAgent
                 }
                 finally
                 {
+                    int finishedFilePageCount = session?.PageCount ?? 0;
                     session?.Dispose();
                     session = null;
                     filesFinished++;
                     if (fileFailed) filesFailed++;
-                    ReportPdfProgress(pdfs.Count, filesFinished, filesFailed, 0, "");
+                    if (finishedFilePageCount > 0)
+                    {
+                        completedFilePages += finishedFilePageCount;
+                        completedFilesWithPageCount++;
+                    }
+                    double avgPageSeconds = completedPageCount > 0
+                        ? completedPageSeconds / completedPageCount : 0;
+                    double avgPagesPerFile = completedFilesWithPageCount > 0
+                        ? completedFilePages / completedFilesWithPageCount : 0;
+                    ReportPdfProgress(pdfs.Count, filesFinished, filesFailed, 0, "",
+                        0, 0, avgPageSeconds, avgPagesPerFile,
+                        false, total.Elapsed.TotalSeconds);
                 }
             }
 
@@ -429,13 +474,28 @@ public sealed class TakeoffAgent
         catch (Exception ex) { Logger.Warn("Live result table update failed; final export is still available.", ex); }
     }
 
-    private void ReportPdfProgress(int total, int finished, int failed, int processing, string currentFile)
+    private void ReportPdfProgress(
+        int total,
+        int finished,
+        int failed,
+        int processing,
+        string currentFile,
+        int currentFilePages = 0,
+        int currentFilePagesCompleted = 0,
+        double averagePageSeconds = 0,
+        double averagePagesPerFile = 0,
+        bool currentPageInProgress = false,
+        double progressReportedElapsedSeconds = 0)
     {
         if (_pdfProgress is null) return;
         int pending = Math.Max(0, total - finished - processing);
         try
         {
-            _pdfProgress.Report(new PdfProcessingProgress(total, finished, failed, processing, pending, currentFile));
+            _pdfProgress.Report(new PdfProcessingProgress(
+                total, finished, failed, processing, pending, currentFile,
+                currentFilePages, currentFilePagesCompleted,
+                averagePageSeconds, averagePagesPerFile,
+                currentPageInProgress, progressReportedElapsedSeconds));
         }
         catch (Exception ex) { Logger.Warn("PDF queue progress update failed.", ex); }
     }

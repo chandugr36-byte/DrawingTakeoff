@@ -180,12 +180,19 @@ public sealed class CatalogService
             var key = Key(item);
             if (key.Length >= 8) _hardwareSearchKeys.Add((key, item));
 
-            // Keep compact manufacturer part codes in a dedicated exact lookup. This index
-            // is built once at catalog load, not once per drawing page.
-            if (item.Any(char.IsWhiteSpace)) continue;
-            if (key.Length >= 2 && key.Length <= 32 &&
-                Regex.IsMatch(key, @"^[A-Z][A-Z0-9./-]*\d[A-Z0-9./-]*$", RegexOptions.IgnoreCase))
-                _hardwareCodes.TryAdd(key, item);
+            // Keep manufacturer part codes in a dedicated exact lookup. Some catalog
+            // entries include a separated size after the code (for example "PSCL 1/2").
+            // Store the leading identifier too; this index is built once at catalog load.
+            var codeMatch = Regex.Match(item.Trim(), @"^(?<code>[A-Z][A-Z0-9./-]{1,31})(?:\s+|$)",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (codeMatch.Success)
+            {
+                var code = Key(codeMatch.Groups["code"].Value);
+                bool hasDigit = code.Any(char.IsDigit);
+                bool knownAlphaCode = code is "PSCL" or "PAF" or "DTC" or "TSP" or "MASAZ";
+                if (code.Length >= 2 && code.Length <= 32 && (hasDigit || knownAlphaCode))
+                    _hardwareCodes.TryAdd(code, item);
+            }
         }
     }
 
@@ -201,47 +208,76 @@ public sealed class CatalogService
         return count;
     }
 
-    /// <summary>Classifies a discovered item using exact catalog membership, domain terms and model hint.</summary>
+    /// <summary>
+    /// Classifies a discovered item using catalog membership, specific hardware evidence,
+    /// lumber evidence and the model hint. Hardware signals are evaluated before broad
+    /// wood/dimensional words so a connector described beside timber is not sent to Lumber.
+    /// Lumber and hardware descriptions are resolved semantically before trusting catalog placement.
+    /// </summary>
     public string Classify(string? item, string? modelCategory = null)
     {
         if (string.IsNullOrWhiteSpace(item)) return OtherCategory;
+
         var value = Regex.Replace(item.Trim(), @"^\[NOT IN CATALOG\]\s*", "", RegexOptions.IgnoreCase);
         var key = Key(value);
         bool inLumber = _lumberByKey.ContainsKey(key);
         bool inHardware = _hardwareByKey.ContainsKey(key);
-
-        // Overlapping entries exist in the source lists. Strong connector/fastener terms win;
-        // otherwise material and dimensional products stay in Lumber.
-        if (inHardware && (!inLumber || LooksLikeHardware(value))) return HardwareCategory;
-        if (inLumber) return LumberCategory;
-        if (inHardware) return HardwareCategory;
-
-        if (LooksLikeHardware(value)) return HardwareCategory;
-        if (LooksLikeLumber(value)) return LumberCategory;
-
         var hint = (modelCategory ?? string.Empty).Trim();
-        if (hint.Equals("lumber", StringComparison.OrdinalIgnoreCase)) return LumberCategory;
-        if (hint.Equals("hardware", StringComparison.OrdinalIgnoreCase)) return HardwareCategory;
+        bool hintHardware = hint.Equals(HardwareCategory, StringComparison.OrdinalIgnoreCase);
+        bool hintLumber = hint.Equals(LumberCategory, StringComparison.OrdinalIgnoreCase);
+
+        // The supplied workbook has hardware products accidentally placed in its Lumber
+        // sheet (for example Simpson connectors, anchor bolts, straps, nails and screws).
+        // Therefore semantic hardware evidence MUST take precedence over sheet membership.
+        // This also keeps a connector categorized as Hardware when its note mentions wood.
+        if (LooksLikeHardware(value) || ContainsKnownHardwareCode(value)) return HardwareCategory;
+
+        // Descriptive wood-member evidence comes before catalog-sheet placement. The
+        // workbook also contains genuine lumber products in the Hardware sheet (for
+        // example LVL entries), so sheet membership is not a reliable category by itself.
+        bool strongLumber = LooksLikeLumber(value);
+        if (strongLumber) return LumberCategory;
+
+        // Catalog membership resolves remaining unambiguous items only after both
+        // semantic hardware and semantic lumber evidence have been evaluated.
+        if (inHardware && !inLumber) return HardwareCategory;
+        if (inLumber && !inHardware) return LumberCategory;
+
+        // Model category is useful for less-specific descriptions such as a bracket code
+        // or a generic product family, but it cannot override explicit lumber dimensions.
+        if (hintHardware) return HardwareCategory;
+        if (hintLumber) return LumberCategory;
+        if (inHardware) return HardwareCategory;
+        if (inLumber) return LumberCategory;
         return OtherCategory;
+    }
+
+    private bool ContainsKnownHardwareCode(string value)
+    {
+        if (_hardwareCodes.Count == 0 || string.IsNullOrWhiteSpace(value)) return false;
+        foreach (Match match in Regex.Matches(value,
+                     @"(?<![A-Z0-9])(?<code>[A-Z][A-Z0-9./-]{1,31})(?![A-Z0-9])",
+                     RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+        {
+            var code = Key(match.Groups["code"].Value);
+            if (_hardwareCodes.ContainsKey(code)) return true;
+        }
+        return false;
     }
 
     private static bool LooksLikeHardware(string value)
     {
         var s = value.ToUpperInvariant();
-        string[] terms =
-        {
-            "SIMPSON", "HANGER", "HOLDOWN", "HOLD-DOWN", "ANCHOR", "THRU BOLT", "THROUGH BOLT",
-            "BOLT", "SCREW", "NAIL", "NUT", "WASHER", "THREADED ROD", "STRAP", "TIE ",
-            "CLIP", "BRACKET", "CONNECTOR", "FASTENER", "POST BASE", "POST CAP", "HURRICANE",
-            "HDG", "SS304", "EMBED PLATE", "SHEAR PLATE", "SEAT", "HARDWARE",
-            "SIMPSON STRONG-TIE", "STRONG-TIE", "METAL CONNECTOR", "STRUCTURAL CONNECTOR",
-            "ANCHOR ROD", "CARRIAGE BOLT", "LAG SCREW", "LAG BOLT", "HEX NUT",
-            "ROUND WASHER", "HURRICANE TIE", "TIE-DOWN", "TIE DOWN", "METAL STRAP",
-            "STEEL STRAP", "JOIST HANGER", "POST ANCHOR", "EXPANSION ANCHOR"
-        };
-        if (terms.Any(t => s.Contains(t, StringComparison.Ordinal))) return true;
-        // Common connector families and manufacturer part-number forms from the hardware list.
-        return Regex.IsMatch(s, @"\b(?:H[1-9](?:\.\d+[A-Z]?)?|A\d{1,3}[A-Z]?|TC\d{1,3}[A-Z]?|LUS\w*|LU\d+\w*|HUC\w*|CCQ\w*|CCOQ\w*|HTT\w*|DTT\w*|PHD\w*|MST\w*|MSTA\w*|LSTA\w*|CMST\w*|GATR\w*|THD\w*|SDS\w*|SDW\w*|SDWH\w*|HDUE\w*|HGA\w*|LTP\w*|STB\w*|BP\w*|ABU\w*|ABA\w*|ABW\w*|CBT\w*|CS\d{2,}|PT-?\d+)\b");
+        // Phrase/token boundaries are intentional: e.g. a wood post is lumber, while a
+        // post base/post cap is a connector. Avoid broad substring matches like "POST".
+        const string hardwareTerms = @"\b(?:SIMPSON(?:\s+STRONG[- ]?TIE)?|STRONG[- ]?TIE|JOIST\s+HANGERS?|HANGERS?|HOLD[ -]?DOWNS?|ANCHORS?|ANCHOR\s+BOLTS?|HEADED\s+STUDS?|ANCHOR\s+STUDS?|WELDED\s+STUDS?|THRU\s+BOLTS?|THROUGH\s+BOLTS?|CARRIAGE\s+BOLTS?|LAG\s+SCREWS?|LAG\s+BOLTS?|BOLTS?|SCREWS?|NAILS?|NAIL\s+PLATES?|HEX\s+NUTS?|NUTS?|WASHERS?|THREADED\s+RODS?|STRAPS?|HURRICANE\s+TIES?|TIE[ -]?DOWNS?|STRAP\s+TIES?|CLIPS?|BRACKETS?|CONNECTORS?|FASTENERS?|POST\s+BASES?|POST\s+CAPS?|POST\s+ANCHORS?|SHEAR\s+PLATES?|EMBED(?:DED)?\s+PLATES?|METAL\s+CONNECTORS?|STRUCTURAL\s+CONNECTORS?|EXPANSION\s+ANCHORS?|BEAM\s+SEATS?|HDG|SS304)\b";
+        if (Regex.IsMatch(s, hardwareTerms, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)) return true;
+
+        // Common connector families. The catalog-driven exact code lookup below is the
+        // primary check for all hardware SKUs; these are fallback families for uncatalogued SKUs.
+        return Regex.IsMatch(s,
+            @"\b(?:H[1-9](?:\.\d+[A-Z]?)?|A\d{1,3}[A-Z]?|TC\d{1,3}[A-Z]?|LUS\w*|LU\d+\w*|HUC\w*|CCQ\w*|CCOQ\w*|HTT\w*|DTT\w*|PHD\w*|MST\w*|MSTA\w*|LSTA\w*|CMST\w*|GATR\w*|THD\w*|SDS\w*|SDW\w*|SDWH\w*|HDUE\w*|HGA\w*|LTP\w*|STB\w*|BP\w*|ABU\w*|ABA\w*|ABW\w*|CBT\w*|CS\d{2,}|PT-?\d+|PSCL\w*|PAF|DTC|TSP|MASAZ)\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private static bool LooksLikeLumber(string value)
@@ -249,14 +285,14 @@ public sealed class CatalogService
         var s = value.ToUpperInvariant();
         string[] terms =
         {
-            "LUMBER", "WOOD", "STUD", "JOIST", "TRUSS", "TJI", "RAFTER", "BEAM", "POST",
-            "HEADER", "TIMBER", "LVL", "LSL", "PSL", "GLULAM", "PLYWOOD", "OSB", "CDX",
-            "SHEATHING", "DECKING", "WOOD DECK", "FASCIA", "SOFFIT", "SIDING", "BLOCKING",
-            "T&G", "TONGUE AND GROOVE", "TONGUE & GROOVE"
+            "LUMBER", "WOOD", "WOOD POST", "TIMBER POST", "STUD", "JOIST", "TRUSS", "TJI",
+            "RAFTER", "BEAM", "HEADER", "TIMBER", "LVL", "LSL", "PSL", "GLULAM", "PLYWOOD",
+            "OSB", "CDX", "SHEATHING", "DECKING", "WOOD DECK", "FASCIA", "SOFFIT", "SIDING",
+            "BLOCKING", "T&G", "TONGUE AND GROOVE", "TONGUE & GROOVE"
         };
         if (terms.Any(t => s.Contains(t, StringComparison.Ordinal))) return true;
-        return Regex.IsMatch(s, @"\b\d+\s*[X×]\s*\d+(?:\s+\d+/\d+)?\b") &&
-               !LooksLikeHardware(s);
+        // Dimensional members/sheet goods are lumber only when no connector signal matched.
+        return Regex.IsMatch(s, @"\b\d+\s*[X×]\s*\d+(?:\s+\d+/\d+)?\b", RegexOptions.IgnoreCase);
     }
 
     private static string Numbers(string s)

@@ -68,14 +68,16 @@
             <Setter Property="MinRowHeight" Value="42"/>
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="ColumnHeaderHeight" Value="52"/>
-            <Setter Property="HorizontalScrollBarVisibility" Value="Auto"/>
-            <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
             <Setter Property="EnableRowVirtualization" Value="True"/>
             <Setter Property="EnableColumnVirtualization" Value="True"/>
         </Style>
         <Style TargetType="DataGridCell">
             <Setter Property="Padding" Value="7,5"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <!-- Keep the text presenter stretched so long descriptions wrap; the text itself is centered. -->
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="BorderThickness" Value="0,0,0,1"/>
             <Setter Property="BorderBrush" Value="#E8EEF4"/>
@@ -84,6 +86,8 @@
             <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="TextTrimming" Value="None"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="TextAlignment" Value="Center"/>
             <Setter Property="Margin" Value="2,3"/>
         </Style>
         <Style TargetType="DataGridColumnHeader">
@@ -175,9 +179,16 @@
                 <Button x:Name="CancelBtn" Grid.Column="1" Content="Cancel" Margin="8,0,0,0" IsEnabled="False" Click="Cancel_Click"/>
                 <StackPanel Grid.Column="2" Margin="18,0,18,0" VerticalAlignment="Center">
                     <Grid>
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <TextBlock x:Name="StatusText" Text="Ready — add drawing PDFs to begin" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold"/>
-                        <TextBlock x:Name="ElapsedText" Grid.Column="1" Text="00:00" Foreground="{StaticResource Muted}" FontSize="12"/>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="StatusText" Text="Ready — add drawing PDFs to begin" Foreground="{StaticResource Ink}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="ElapsedText" Grid.Column="1" Text="Elapsed: 00:00" Foreground="{StaticResource Muted}" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="EstimatedTotalText" Grid.Column="2" Text="Estimated total: --" Foreground="{StaticResource Muted}" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="RemainingText" Grid.Column="3" Text="Remaining: --" Foreground="{StaticResource Accent}" FontSize="11" FontWeight="SemiBold" Margin="12,0,0,0" VerticalAlignment="Center"/>
                     </Grid>
                     <ProgressBar x:Name="Bar" Height="7" Minimum="0" Maximum="1" Value="0" Margin="0,7,0,0" Background="#E8EEF5" Foreground="#2196C5"/>
                     <TextBlock x:Name="PdfProcessingText" Text="PDFs: 0 finished · 0 processing · 0 pending"
@@ -201,7 +212,11 @@
                 </Grid>
                 <TabControl Grid.Row="1" Background="White" BorderThickness="0">
                     <TabItem Header="Lumber &amp; Hardware">
-                        <DataGrid x:Name="ResultGrid" AutoGenerateColumns="False" SelectionChanged="Grid_SelectionChanged" Margin="0,6,0,0">
+                        <DataGrid x:Name="ResultGrid" AutoGenerateColumns="False" SelectionChanged="Grid_SelectionChanged" Margin="0,6,0,0"
+                                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                  ScrollViewer.CanContentScroll="True"
+                                  CanUserResizeColumns="True" CanUserReorderColumns="True">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Sl num" Binding="{Binding DisplaySlNo}" Width="58" MinWidth="52" ElementStyle="{StaticResource WrappedGridText}"/>
                                 <DataGridTextColumn Header="Sheet / Drawing" Binding="{Binding Sheet}" Width="1.15*" MinWidth="140" ElementStyle="{StaticResource WrappedGridText}"/>
@@ -213,7 +228,11 @@
                         </DataGrid>
                     </TabItem>
                     <TabItem Header="Other identified materials">
-                        <DataGrid x:Name="OtherGrid" AutoGenerateColumns="False" SelectionChanged="Grid_SelectionChanged" Margin="0,6,0,0">
+                        <DataGrid x:Name="OtherGrid" AutoGenerateColumns="False" SelectionChanged="Grid_SelectionChanged" Margin="0,6,0,0"
+                                  ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                  ScrollViewer.CanContentScroll="True"
+                                  CanUserResizeColumns="True" CanUserReorderColumns="True">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Sl num" Binding="{Binding OtherSlNo}" Width="58" MinWidth="52" ElementStyle="{StaticResource WrappedGridText}"/>
                                 <DataGridTextColumn Header="Sheet / Drawing" Binding="{Binding Sheet}" Width="1.2*" MinWidth="140" ElementStyle="{StaticResource WrappedGridText}"/>

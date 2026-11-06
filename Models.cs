@@ -56,5 +56,16 @@ public sealed record PageResult(string SheetNumber, string SheetName, List<Extra
 
 /// <summary>File-level progress for the WPF queue indicator. Finished includes successful and failed files.</summary>
 public sealed record PdfProcessingProgress(
-    int Total, int Finished, int Failed, int Processing, int Pending, string CurrentFile);
+    int Total,
+    int Finished,
+    int Failed,
+    int Processing,
+    int Pending,
+    string CurrentFile,
+    int CurrentFilePages = 0,
+    int CurrentFilePagesCompleted = 0,
+    double AveragePageSeconds = 0,
+    double AveragePagesPerFile = 0,
+    bool CurrentPageInProgress = false,
+    double ProgressReportedElapsedSeconds = 0);
 

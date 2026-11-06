@@ -119,3 +119,12 @@ Use the log to compare `page complete in ...s`, Ollama prompt/output tokens and 
 A text-only Ollama model cannot inspect vector-only or image-only drawing details. Select an installed vision-language model for visual connector and lumber callouts. Detected callout/appearance counts are not the same as procurement quantities. Review evidence and quantity basis before issuing a takeoff.
 
 - The full normalized page text is also checked against complete catalog descriptions for direct lumber/hardware matches; short hardware part numbers have a separate token-exact check. These rule matches are reconciled with AI results by material identity, not blindly added to them.
+
+
+## Latest classification and time-estimate update
+
+- Hardware classification now checks explicit product/connector terminology and recognized hardware part codes **before** trusting the source catalog sheet. This corrects misfiled hardware rows in the reference workbook's Lumber sheet (including Simpson connectors, anchor bolts, flat straps, nails, screws and headed studs).
+- Catalog-only classification is used after hardware semantics. Lumber dimensions and wood-member descriptions such as `2X4-16' SYP #2`, TJI joists/trusses, LVL, plywood and OSB remain Lumber when no hardware signal exists.
+- Lumber and Hardware reference lists contain some duplicated normalized descriptions. Ambiguous overlaps are resolved from material terms and the model's category hint rather than blindly selecting the first catalog.
+- Both result grids explicitly enable horizontal and vertical scrollbars. Header text wraps; cell text wraps and is center-aligned horizontally and vertically; columns remain user-resizable.
+- The progress panel now shows elapsed time, estimated total time and remaining time. The ETA is based on measured page processing duration and observed average PDF page count. It recalculates every second while a model request is running. Before the first page completes, the display says `calibrating` because there is not yet a measured baseline. Estimates can move as additional drawings establish a better average; treat them as approximate, not a guaranteed finish time.

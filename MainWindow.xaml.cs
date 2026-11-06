@@ -22,6 +22,7 @@ public partial class MainWindow : Window
     private readonly CatalogService _catalog = new();
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly Stopwatch _runWatch = new();
+    private PdfProcessingProgress? _latestPdfProgress;
     private CancellationTokenSource? _cts;
 
     public MainWindow()
@@ -30,7 +31,7 @@ public partial class MainWindow : Window
         PdfList.ItemsSource = _pdfs;
         ResultGrid.ItemsSource = _rows;
         OtherGrid.ItemsSource = _otherRows;
-        _timer.Tick += (_, _) => ElapsedText.Text = _runWatch.Elapsed.ToString(@"mm\:ss");
+        _timer.Tick += (_, _) => UpdateTimeEstimate();
 
         Logger.Message += (level, message) =>
         {
@@ -189,6 +190,7 @@ public partial class MainWindow : Window
         _otherRows.Clear();
         ResultCountText.Text = "0 lumber / hardware items · 0 other materials";
         PdfProcessingText.Text = $"PDFs: 0 finished · 0 processing · {_pdfs.Count} pending";
+        _latestPdfProgress = null;
         EvidenceText.Text = "Select a row to inspect its source evidence.";
         ActivityText.Text = "Live results are incremental: the local scan publishes preliminary matches first; Ollama continues to identify uncatalogued items, interpret diagram content and review quantity evidence until each page is complete.";
         Bar.Value = 0;
@@ -198,6 +200,7 @@ public partial class MainWindow : Window
         AnalysisModelBox.IsEnabled = false;
         _cts = new CancellationTokenSource();
         _runWatch.Restart();
+        UpdateTimeEstimate();
         _timer.Start();
 
         var settings = new AgentSettings
@@ -228,10 +231,12 @@ public partial class MainWindow : Window
         var liveRows = new Progress<IReadOnlyList<TakeoffRow>>(items => UpdateRows(items));
         var pdfProgress = new Progress<PdfProcessingProgress>(p =>
         {
+            _latestPdfProgress = p;
             var failed = p.Failed > 0 ? $" · {p.Failed} failed" : string.Empty;
             PdfProcessingText.Text = $"PDFs: {p.Finished}/{p.Total} finished · {p.Processing} processing · {p.Pending} pending{failed}";
             if (!string.IsNullOrWhiteSpace(p.CurrentFile))
                 ActivityText.Text = $"Current PDF: {p.CurrentFile}";
+            UpdateTimeEstimate();
         });
         var agent = new TakeoffAgent(new OllamaClient(OllamaUrl), _catalog, settings, progress, status, liveRows, pdfProgress);
         var files = _pdfs.ToList();
@@ -256,6 +261,8 @@ public partial class MainWindow : Window
         finally
         {
             _timer.Stop();
+            _runWatch.Stop();
+            UpdateTimeEstimate();
             RunBtn.IsEnabled = true;
             CancelBtn.IsEnabled = false;
             RefreshModelsBtn.IsEnabled = true;
@@ -273,6 +280,78 @@ public partial class MainWindow : Window
         ExcelBtn.IsEnabled = CsvBtn.IsEnabled = finalRows.Count > 0;
         var elapsedText = _runWatch.Elapsed.ToString(@"mm\:ss");
         ActivityText.Text = $"Last run: {elapsedText}. Local matches were displayed as preliminary findings; the AI stage continued to discover, classify and reconcile additional materials before completion.";
+    }
+
+    private void UpdateTimeEstimate()
+    {
+        if (ElapsedText is null) return;
+
+        var elapsed = _runWatch.Elapsed;
+        ElapsedText.Text = $"Elapsed: {FormatDuration(elapsed)}";
+
+        var progress = _latestPdfProgress;
+        if (progress is null || progress.Total <= 0)
+        {
+            EstimatedTotalText.Text = "Estimated total: --";
+            RemainingText.Text = "Remaining: --";
+            return;
+        }
+
+        if (progress.Finished >= progress.Total)
+        {
+            EstimatedTotalText.Text = $"Estimated total: {FormatDuration(elapsed)}";
+            RemainingText.Text = "Remaining: 00:00";
+            return;
+        }
+
+        // ETA is based on measured page durations and observed average pages per PDF.
+        // The first page establishes a baseline; before that we deliberately show
+        // "calibrating" rather than displaying a fabricated time estimate.
+        if (progress.AveragePageSeconds <= 0 || progress.AveragePagesPerFile <= 0)
+        {
+            EstimatedTotalText.Text = "Estimated total: calibrating";
+            RemainingText.Text = progress.Processing > 0
+                ? "Remaining: learning first page"
+                : "Remaining: --";
+            return;
+        }
+
+        double remainingPagesInCurrentFile = 0;
+        double activePageRemainingSeconds = 0;
+        if (progress.Processing > 0)
+        {
+            remainingPagesInCurrentFile = progress.CurrentFilePages > 0
+                ? Math.Max(0, progress.CurrentFilePages - progress.CurrentFilePagesCompleted)
+                : progress.AveragePagesPerFile;
+
+            if (progress.CurrentPageInProgress && remainingPagesInCurrentFile > 0)
+            {
+                // Let the ETA count down while Ollama is working on the current page,
+                // instead of leaving a frozen estimate until the page finishes.
+                double currentPageElapsed = Math.Max(0,
+                    elapsed.TotalSeconds - progress.ProgressReportedElapsedSeconds);
+                activePageRemainingSeconds = Math.Max(0,
+                    progress.AveragePageSeconds - currentPageElapsed);
+                remainingPagesInCurrentFile = Math.Max(0, remainingPagesInCurrentFile - 1);
+            }
+        }
+
+        double estimatedPagesInPendingFiles = progress.Pending * progress.AveragePagesPerFile;
+        double remainingSeconds = Math.Max(0, activePageRemainingSeconds +
+            progress.AveragePageSeconds * (remainingPagesInCurrentFile + estimatedPagesInPendingFiles));
+
+        if (progress.Finished >= progress.Total) remainingSeconds = 0;
+
+        RemainingText.Text = $"Remaining: {FormatDuration(TimeSpan.FromSeconds(remainingSeconds))}";
+        EstimatedTotalText.Text = $"Estimated total: {FormatDuration(TimeSpan.FromSeconds(elapsed.TotalSeconds + remainingSeconds))}";
+    }
+
+    private static string FormatDuration(TimeSpan value)
+    {
+        if (value < TimeSpan.Zero) value = TimeSpan.Zero;
+        if (value.TotalDays >= 1)
+            return ((int)value.TotalDays) + "d " + value.ToString(@"hh\:mm\:ss");
+        return value.TotalHours >= 1 ? value.ToString(@"h\:mm\:ss") : value.ToString(@"m\:ss");
     }
 
     private void UpdateRows(IEnumerable<TakeoffRow> rows)
